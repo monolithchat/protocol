@@ -34,6 +34,10 @@ func (conn *mockConn) WriteJSON(v interface{}) error {
 }
 
 func (conn *mockConn) Close() error {
+	if conn.closed {
+		return nil
+	}
+
 	close(conn.written)
 	conn.closed = true
 	return nil
@@ -43,7 +47,7 @@ func newMockConn() *mockConn {
 	return &mockConn{
 		written: make(chan bool),
 		content: "",
-		closed:  true,
+		closed:  false,
 	}
 }
 
@@ -67,6 +71,7 @@ func TestHubRun(t *testing.T) {
 	err := conn.ReadJSON(&readMessage)
 	if err != nil {
 		t.Error(err)
+		return
 	}
 
 	if readMessage.Type != message.Type {
@@ -107,5 +112,8 @@ func TestHubConnectionClosed(t *testing.T) {
 }
 
 func TestHubListen(t *testing.T) {
+	hub := GenericHub()
+	conn := newMockConn()
+	hub.Attach(conn)
 
 }
