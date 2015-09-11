@@ -26,11 +26,6 @@ type Hub struct {
 
 type ProcessorFn func(*Hub, *Message) (*Message, error)
 
-type connWrapper struct {
-	connection Conn
-	closed     chan bool
-}
-
 func GenericHub() *Hub {
 	return &Hub{
 		connections:      make(map[Conn]bool),
@@ -69,10 +64,7 @@ func (hub *Hub) GlobalBroadcast(message *Message) {
 
 func (hub *Hub) Attach(connection Conn) {
 	hub.connections[connection] = true
-	go hub.listen(&connWrapper{
-		connection: connection,
-		closed:     make(chan bool),
-	})
+	go hub.listen(connection)
 }
 
 func (hub *Hub) CloseConnection(connection Conn) {
@@ -84,12 +76,19 @@ func (hub *Hub) CloseConnection(connection Conn) {
 	}
 }
 
-func (hub *Hub) listen(connection connWrapper) {
+func (hub *Hub) listen(connection Conn) {
 	for {
 		request := &Message{}
 		err := connection.ReadJSON(request)
 		if err != nil {
 			hub.CloseConnection(connection)
+			log.Println(err)
+			return
+		}
+
+		fn, exists := hub.processors[request.Type]
+		var response *Message
+		if exists {
 		}
 	}
 }
