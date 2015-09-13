@@ -22,6 +22,7 @@ type Hub struct {
 	connections      map[Conn]bool
 	globalBroadcasts chan *Message
 	processors       map[string]ProcessorFn
+	running          bool
 }
 
 type ProcessorFn func(*Hub, *Message) (*Message, error)
@@ -31,10 +32,16 @@ func GenericHub() *Hub {
 		connections:      make(map[Conn]bool),
 		globalBroadcasts: make(chan *Message),
 		processors:       make(map[string]ProcessorFn),
+		running:          false,
 	}
 }
 
 func (hub *Hub) Run() {
+	hub.running = true
+	for conn, _ := range hub.connections {
+		go hub.listen(conn)
+	}
+
 	for {
 		message := <-hub.globalBroadcasts
 		for connection := range hub.connections {
@@ -64,7 +71,9 @@ func (hub *Hub) GlobalBroadcast(message *Message) {
 
 func (hub *Hub) Attach(connection Conn) {
 	hub.connections[connection] = true
-	go hub.listen(connection)
+	if hub.running {
+		go hub.listen(connection)
+	}
 }
 
 func (hub *Hub) CloseConnection(connection Conn) {
@@ -76,12 +85,13 @@ func (hub *Hub) CloseConnection(connection Conn) {
 	}
 }
 
-func (hub *Hub) listen(connection Conn) {
+func (hub *Hub) listen(conn Conn) {
 	for {
 		request := &Message{}
-		err := connection.ReadJSON(request)
+		err := conn.ReadJSON(request)
 		if err != nil {
-			hub.CloseConnection(connection)
+			log.Println("Error reading JSON")
+			hub.CloseConnection(conn)
 			log.Println(err)
 			return
 		}
@@ -89,6 +99,33 @@ func (hub *Hub) listen(connection Conn) {
 		fn, exists := hub.processors[request.Type]
 		var response *Message
 		if exists {
+			response, err = fn(hub, request)
+			if err != nil {
+				response = &Message{
+					Type:    "error",
+					Payload: err.Error(),
+				}
+			}
+		} else {
+			response = &Message{
+				Type:    "error",
+				Payload: "unknown message type",
+			}
 		}
+
+		response.stamp()
+		err = conn.WriteJSON(response)
+		if err != nil {
+			hub.CloseConnection(conn)
+			log.Println("Closed connection")
+			log.Println(err)
+			return
+		}
+	}
+}
+
+func (message *Message) stamp() {
+	if message.Date.IsZero() {
+		message.Date = time.Now()
 	}
 }
