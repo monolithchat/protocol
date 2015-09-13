@@ -3,6 +3,8 @@ package protocol
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	. "github.com/smartystreets/goconvey/convey"
 	"testing"
 	"time"
 )
@@ -18,6 +20,7 @@ func (conn *mockConn) ReadJSON(v interface{}) error {
 		return errors.New("Connection is closed")
 	}
 
+	<-conn.written
 	err := json.Unmarshal([]byte(conn.content), v)
 	return err
 }
@@ -38,7 +41,7 @@ func (conn *mockConn) Close() error {
 		return nil
 	}
 
-	close(conn.written)
+	//close(conn.written)
 	conn.closed = true
 	return nil
 }
@@ -51,69 +54,164 @@ func newMockConn() *mockConn {
 	}
 }
 
-func TestHubRun(t *testing.T) {
-	conn := newMockConn()
-	hub := GenericHub()
-	go hub.Run()
-	hub.connections[conn] = true
+func TestHub(t *testing.T) {
+	Convey("Hub", t, func() {
+		Convey(".Attach", func() {
+			hub := GenericHub()
+			conn := newMockConn()
 
-	message := Message{
-		Type:    "test",
-		Date:    time.Now(),
-		Payload: "testing!",
-	}
+			hub.Attach(conn)
 
-	hub.GlobalBroadcast(&message)
+			So(hub.connections, ShouldContainKey, conn)
+		})
 
-	<-conn.written
+		Convey(".RegisterProcessor", func() {
+			hub := GenericHub()
+			fn := func(hub *Hub, request *Message) (*Message, error) {
+				return request, nil
+			}
 
-	var readMessage Message
-	err := conn.ReadJSON(&readMessage)
-	if err != nil {
-		t.Error(err)
-		return
-	}
+			So(hub.processors, ShouldBeEmpty)
+			hub.RegisterProcessor("test", fn)
+			So(hub.processors, ShouldNotBeEmpty)
+			So(hub.processors["test"], ShouldEqual, ProcessorFn(fn))
+		})
 
-	if readMessage.Type != message.Type {
-		t.Error("messages not of same type", readMessage.Type)
-	}
-	if readMessage.Date != message.Date {
-		t.Error("messages don't have same date.", readMessage.Date)
-	}
-	if readMessage.Payload != message.Payload {
-		t.Error("messages don't have same payload.", readMessage.Payload)
-	}
-}
+		Convey(".Run", func() {
+			conn := newMockConn()
+			hub := GenericHub()
+			hub.Attach(conn)
+			hub.RegisterProcessor("test", func(hub *Hub, request *Message) (*Message, error) {
+				return request, nil
+			})
 
-func TestHubAttach(t *testing.T) {
-	hub := GenericHub()
-	conn := newMockConn()
+			go hub.Run()
 
-	hub.Attach(conn)
+			message := Message{
+				Type:    "test",
+				Date:    time.Now(),
+				Payload: "testing!",
+			}
 
-	_, exists := hub.connections[conn]
-	if !exists {
-		t.Error("Hub didn't add connection")
-	}
-}
+			hub.GlobalBroadcast(&message)
 
-func TestHubConnectionClosed(t *testing.T) {
-	hub := GenericHub()
-	conn := newMockConn()
-	hub.Attach(conn)
+			var readMessage Message
+			So(conn.ReadJSON(&readMessage), ShouldBeNil)
+			So(readMessage, ShouldResemble, message)
+		})
 
-	hub.CloseConnection(conn)
-	if !conn.closed {
-		t.Error("connection didn't close")
-	}
-	if hub.connections[conn] {
-		t.Error("connection still in hub's map")
-	}
-}
+		Convey(".ConnectionClose", func() {
+			hub := GenericHub()
+			conn := newMockConn()
+			hub.Attach(conn)
 
-func TestHubListen(t *testing.T) {
-	hub := GenericHub()
-	conn := newMockConn()
-	hub.Attach(conn)
+			hub.CloseConnection(conn)
 
+			So(conn.closed, ShouldBeTrue)
+			So(hub.connections, ShouldNotContainKey, conn)
+		})
+
+		Convey(".listen", func() {
+			Convey("responds with an error when it doesn't know the message type", func() {
+				hub := GenericHub()
+				conn := newMockConn()
+
+				go hub.listen(conn)
+
+				conn.WriteJSON(&Message{
+					Type: "notamethod",
+				})
+
+				var response Message
+				So(conn.ReadJSON(&response), ShouldBeNil)
+				So(response.Type, ShouldEqual, "error")
+				So(response.Payload, ShouldEqual, "unknown message type")
+				So(response.Date, ShouldHappenWithin, (time.Second * 5), time.Now())
+			})
+
+			Convey("responds with corresponding ProcessorFn", func() {
+				hub := GenericHub()
+				conn := newMockConn()
+
+				hub.RegisterProcessor("echo", func(hub *Hub, request *Message) (*Message, error) {
+					return request, nil
+				})
+
+				go hub.listen(conn)
+
+				request := Message{
+					Type:    "echo",
+					Date:    time.Now(),
+					Payload: "repeat me!",
+				}
+
+				So(conn.WriteJSON(&request), ShouldBeNil)
+
+				var response Message
+				So(conn.ReadJSON(&response), ShouldBeNil)
+				So(response, ShouldResemble, request)
+			})
+
+			Convey("deals with multiple message types", func() {
+				hub := GenericHub()
+				conn := newMockConn()
+
+				hub.RegisterProcessor("echo", func(_ *Hub, request *Message) (*Message, error) {
+					return request, nil
+				})
+				hub.RegisterProcessor("hello", func(_ *Hub, request *Message) (*Message, error) {
+					str, ok := request.Payload.(string)
+					if !ok {
+						return nil, fmt.Errorf("Couldn't read name %#v", request.Payload)
+					}
+
+					return &Message{
+						Type:    "greetings",
+						Payload: fmt.Sprintf("hello %s", str),
+					}, nil
+				})
+
+				go hub.listen(conn)
+
+				request := Message{
+					Type:    "echo",
+					Date:    time.Now(),
+					Payload: "repeat me!",
+				}
+
+				So(conn.WriteJSON(&request), ShouldBeNil)
+
+				var response Message
+				So(conn.ReadJSON(&response), ShouldBeNil)
+				So(response, ShouldResemble, request)
+
+				request2 := Message{
+					Type:    "hello",
+					Payload: "don",
+				}
+				So(conn.WriteJSON(&request2), ShouldBeNil)
+				var response2 Message
+				So(conn.ReadJSON(&response2), ShouldBeNil)
+				So(response2.Payload.(string), ShouldEqual, "hello don")
+			})
+
+			Convey("forwards errors down the stream", func() {
+				hub := GenericHub()
+				conn := newMockConn()
+
+				hub.RegisterProcessor("error", func(hub *Hub, request *Message) (*Message, error) {
+					return nil, fmt.Errorf("forced error")
+				})
+
+				go hub.listen(conn)
+
+				So(conn.WriteJSON(&Message{Type: "error"}), ShouldBeNil)
+
+				var response Message
+				So(conn.ReadJSON(&response), ShouldBeNil)
+				So(response.Type, ShouldEqual, "error")
+				So(response.Payload.(string), ShouldEqual, "forced error")
+			})
+		})
+	})
 }
