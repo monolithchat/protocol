@@ -54,17 +54,12 @@ func newMockConn() *mockConn {
 	}
 }
 
+func testSetup() (*Hub, Conn) {
+	return GenericHub(), newMockConn()
+}
+
 func TestHub(t *testing.T) {
 	Convey("Hub", t, func() {
-		Convey(".Attach", func() {
-			hub := GenericHub()
-			conn := newMockConn()
-
-			hub.Attach(conn)
-
-			So(hub.connections, ShouldContainKey, conn)
-		})
-
 		Convey(".RegisterProcessor", func() {
 			hub := GenericHub()
 			fn := func(hub *Hub, request *Message) (*Message, error) {
@@ -77,9 +72,16 @@ func TestHub(t *testing.T) {
 			So(hub.processors["test"], ShouldEqual, ProcessorFn(fn))
 		})
 
+		Convey(".Attach", func() {
+			hub, conn := testSetup()
+
+			hub.Attach(conn)
+
+			So(hub.connections, ShouldContainKey, conn)
+		})
+
 		Convey(".Run", func() {
-			conn := newMockConn()
-			hub := GenericHub()
+			hub, conn := testSetup()
 			hub.Attach(conn)
 			hub.RegisterProcessor("test", func(hub *Hub, request *Message) (*Message, error) {
 				return request, nil
@@ -101,20 +103,18 @@ func TestHub(t *testing.T) {
 		})
 
 		Convey(".ConnectionClose", func() {
-			hub := GenericHub()
-			conn := newMockConn()
+			hub, conn := testSetup()
 			hub.Attach(conn)
 
 			hub.CloseConnection(conn)
 
-			So(conn.closed, ShouldBeTrue)
+			So(conn.(*mockConn).closed, ShouldBeTrue)
 			So(hub.connections, ShouldNotContainKey, conn)
 		})
 
 		Convey(".listen", func() {
 			Convey("responds with an error when it doesn't know the message type", func() {
-				hub := GenericHub()
-				conn := newMockConn()
+				hub, conn := testSetup()
 
 				go hub.listen(conn)
 
@@ -130,8 +130,7 @@ func TestHub(t *testing.T) {
 			})
 
 			Convey("responds with corresponding ProcessorFn", func() {
-				hub := GenericHub()
-				conn := newMockConn()
+				hub, conn := testSetup()
 
 				hub.RegisterProcessor("echo", func(hub *Hub, request *Message) (*Message, error) {
 					return request, nil
@@ -153,8 +152,7 @@ func TestHub(t *testing.T) {
 			})
 
 			Convey("deals with multiple message types", func() {
-				hub := GenericHub()
-				conn := newMockConn()
+				hub, conn := testSetup()
 
 				hub.RegisterProcessor("echo", func(_ *Hub, request *Message) (*Message, error) {
 					return request, nil
@@ -196,8 +194,7 @@ func TestHub(t *testing.T) {
 			})
 
 			Convey("forwards errors down the stream", func() {
-				hub := GenericHub()
-				conn := newMockConn()
+				hub, conn := testSetup()
 
 				hub.RegisterProcessor("error", func(hub *Hub, request *Message) (*Message, error) {
 					return nil, fmt.Errorf("forced error")
